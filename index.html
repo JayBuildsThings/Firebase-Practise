@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FireBase x Supabase PWA</title>
+    <link rel="manifest" href="manifest.json">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Supabase JS -->
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center font-sans">
+
+    <div id="app" class="w-full max-w-md bg-white p-6 rounded-lg shadow-md">
+        
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-6">
+            <h1 class="text-xl font-bold text-gray-800">My Notes App</h1>
+            <div id="status" class="text-xs text-gray-500">Loading...</div>
+        </div>
+
+        <!-- Login View -->
+        <div id="login-view" class="hidden space-y-4">
+            <p class="text-gray-600 text-sm">Login with Firebase to continue.</p>
+            <input type="email" id="email" placeholder="Email" class="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-green-500">
+            <input type="password" id="password" placeholder="Password" class="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-green-500">
+            <div class="flex gap-2">
+                <button id="btn-login" class="flex-1 bg-green-600 text-white py-2 rounded hover:bg-green-700">Login</button>
+                <button id="btn-signup" class="flex-1 bg-gray-600 text-white py-2 rounded hover:bg-gray-700">Sign Up</button>
+            </div>
+            <p id="auth-error" class="text-red-500 text-xs mt-2"></p>
+        </div>
+
+        <!-- Main View (Notes) -->
+        <div id="main-view" class="hidden space-y-4">
+            <div class="flex gap-2">
+                <input type="text" id="new-note" placeholder="Write a note..." class="flex-1 p-2 border rounded focus:outline-none focus:ring-2 focus:ring-green-500">
+                <button id="btn-add" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">+</button>
+            </div>
+            
+            <ul id="notes-list" class="space-y-2 max-h-64 overflow-y-auto">
+                <!-- Notes injected here -->
+            </ul>
+
+            <button id="btn-logout" class="w-full text-sm text-gray-500 mt-4 hover:text-red-500">Logout</button>
+        </div>
+
+    </div>
+
+    <!-- Application Logic -->
+    <script type="module">
+        // --- CONFIGURATION START ---
+        // 1. Paste your Firebase Config Object here
+        const firebaseConfig = {
+            apiKey: "YOUR_FIREBASE_API_KEY",
+            authDomain: "YOUR_PROJECT.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.appspot.com",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        // 2. Paste your Supabase URL and Anon Key here
+        const SUPABASE_URL = 'https://your-project.supabase.co';
+        const SUPABASE_KEY = 'your-anon-key';
+        // --- CONFIGURATION END ---
+
+
+        // --- IMPORTS & INIT ---
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js';
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } 
+            from 'https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js';
+
+        // Initialize Firebase
+        const fbApp = initializeApp(firebaseConfig);
+        const auth = getAuth(fbApp);
+
+        // Initialize Supabase
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // --- STATE ---
+        let currentUser = null;
+
+        // --- DOM ELEMENTS ---
+        const views = {
+            login: document.getElementById('login-view'),
+            main: document.getElementById('main-view')
+        };
+        const els = {
+            email: document.getElementById('email'),
+            pass: document.getElementById('password'),
+            noteInput: document.getElementById('new-note'),
+            list: document.getElementById('notes-list'),
+            status: document.getElementById('status'),
+            error: document.getElementById('auth-error')
+        };
+
+        // --- AUTHENTICATION LOGIC ---
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            if (user) {
+                showView('main');
+                els.status.innerText = `Logged in: ${user.email}`;
+                loadNotes();
+            } else {
+                showView('login');
+                els.status.innerText = 'Please log in';
+                els.list.innerHTML = '';
+            }
+        });
+
+        document.getElementById('btn-login').addEventListener('click', () => handleAuth('login'));
+        document.getElementById('btn-signup').addEventListener('click', () => handleAuth('signup'));
+        document.getElementById('btn-logout').addEventListener('click', () => signOut(auth));
+
+        async function handleAuth(mode) {
+            const email = els.email.value;
+            const pass = els.pass.value;
+            els.error.innerText = '';
+            
+            try {
+                if (mode === 'login') {
+                    await signInWithEmailAndPassword(auth, email, pass);
+                } else {
+                    await createUserWithEmailAndPassword(auth, email, pass);
+                }
+            } catch (err) {
+                els.error.innerText = err.message;
+            }
+        }
+
+        // --- SUPABASE DATA LOGIC ---
+        async function loadNotes() {
+            if (!currentUser) return;
+            
+            els.list.innerHTML = '<li class="text-xs text-gray-400">Loading notes...</li>';
+
+            // Select notes where firebase_uid matches current user
+            const { data, error } = await supabase
+                .from('notes')
+                .select('*')
+                .eq('firebase_uid', currentUser.uid)
+                .order('created_at', { ascending: false });
+
+            if (error) {
+                console.error('Supabase error:', error);
+                els.list.innerHTML = `<li class="text-red-500 text-xs">Error loading notes.</li>`;
+                return;
+            }
+
+            renderNotes(data || []);
+        }
+
+        async function addNote() {
+            const text = els.noteInput.value.trim();
+            if (!text || !currentUser) return;
+
+            // Insert note with Firebase UID
+            const { error } = await supabase
+                .from('notes')
+                .insert([{ firebase_uid: currentUser.uid, content: text }]);
+
+            if (error) {
+                alert('Error adding note: ' + error.message);
+            } else {
+                els.noteInput.value = '';
+                loadNotes();
+            }
+        }
+
+        document.getElementById('btn-add').addEventListener('click', addNote);
+
+        // --- HELPERS ---
+        function showView(viewName) {
+            views.login.classList.add('hidden');
+            views.main.classList.add('hidden');
+            views[viewName].classList.remove('hidden');
+        }
+
+        function renderNotes(notes) {
+            els.list.innerHTML = '';
+            if (notes.length === 0) {
+                els.list.innerHTML = '<li class="text-sm text-gray-400 text-center italic">No notes yet.</li>';
+                return;
+            }
+            notes.forEach(note => {
+                const li = document.createElement('li');
+                li.className = "bg-gray-50 p-2 rounded border border-gray-200 text-sm flex justify-between";
+                li.innerHTML = `<span>${escapeHtml(note.content)}</span>`;
+                els.list.appendChild(li);
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // --- SERVICE WORKER REGISTRATION ---
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(reg => console.log('SW Registered'))
+                    .catch(err => console.log('SW Fail', err));
+            });
+        }
+    </script>
+</body>
+</html>
